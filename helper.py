@@ -1,7 +1,7 @@
 import re
 import random
 import numpy as np
-import os.path
+# import os.path
 import scipy.misc
 import shutil
 import zipfile
@@ -10,6 +10,10 @@ import tensorflow as tf
 from glob import glob
 from urllib.request import urlretrieve
 from tqdm import tqdm
+
+# added library
+import os
+import cv2
 
 
 class DLProgress(tqdm):
@@ -81,15 +85,25 @@ def gen_batch_function(data_folder, image_shape):
         for batch_i in range(0, len(image_paths), batch_size):
             images = []
             gt_images = []
+            
             for image_file in image_paths[batch_i:batch_i+batch_size]:
                 gt_image_file = label_paths[os.path.basename(image_file)]
 
                 image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
                 gt_image = scipy.misc.imresize(scipy.misc.imread(gt_image_file), image_shape)
 
+                # # Augmentation implementation:
+                # if np.random.random()>0.5:
+                #     # apply flip and translation augmentation
+                #     # image, gt_image = flip_n_translate(image, gt_image)
+
+                #     # apply brightness augmentation
+                #     image = augment_brightness(image)
+                
                 gt_bg = np.all(gt_image == background_color, axis=2)
                 gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
                 gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
+
 
                 images.append(image)
                 gt_images.append(gt_image)
@@ -110,7 +124,10 @@ def gen_test_output(sess, logits, keep_prob, image_pl, data_folder, image_shape)
     :return: Output for for each test image
     """
     for image_file in glob(os.path.join(data_folder, 'image_2', '*.png')):
-        image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
+        try:
+            image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
+        except Exception as e:
+            print ('Error:', e)
 
         im_softmax = sess.run(
             [tf.nn.softmax(logits)],
@@ -138,3 +155,66 @@ def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_p
         sess, logits, keep_prob, input_image, os.path.join(data_dir, 'data_road/testing'), image_shape)
     for name, image in image_outputs:
         scipy.misc.imsave(os.path.join(output_dir, name), image)
+
+def flip_n_translate(image, gt_image):
+    """Apply flip and translation augmentation operation to image"""
+    rows, cols, _ = image.shape
+
+    # flip image:
+    if np.random.random() > 0.5:
+        image = np.fliplr(image)
+        gt_image = np.fliplr(gt_image)
+
+    
+    # apply horizontal translation between -200 to 200 pixels
+    if np.random.random() > 0.5:
+        trans_size = 100
+        trans = int(np.random.uniform(-trans_size, trans_size, 1))
+
+        trans_M = np.float32([[1,0,trans],[0,1,0]])
+        image = cv2.warpAffine(image, trans_M, (cols, rows))
+        gt_image = cv2.warpAffine(gt_image, trans_M, (cols, rows))
+    
+    return image, gt_image
+
+def augment_brightness(image):
+    """Apply brightness augmentation operation to image"""
+    if np.random.random() > 0.5:
+
+        image = cv2.cvtColor(image,cv2.COLOR_RGB2HSV)
+        random_bright = .3+np.random.uniform()
+        
+        # scaling up or down the V channel of HSV
+        image[:,:,2] = image[:,:,2]*random_bright
+        image = cv2.cvtColor(image, cv2.COLOR_HSV2RGB)
+
+    return image
+
+from moviepy.editor import ImageSequenceClip
+
+def save_to_clip(data_sub_dir, data_dir, sess, image_shape, logits, keep_prob, input_image):
+                            # runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image)
+                            # data_dir = './data'
+                            # runs_dir = './runs'
+    runs_dir = './data/test_vids'
+    output_dir = os.path.join(runs_dir, data_sub_dir+'_solve')
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir) # where the images are going to be saved
+
+    # Run NN on test images and save them to HD
+    print('Training Finished. Saving test images to: {}'.format(output_dir))
+    image_outputs = gen_test_output(
+        sess, logits, keep_prob, input_image, os.path.join(data_dir, 'test_vids/'+data_sub_dir), image_shape)
+    for name, image in image_outputs:
+        scipy.misc.imsave(os.path.join(output_dir, name), image)
+    
+    print('Finished! Saved images to: {}\n'.format(output_dir))
+
+    # create video clip from result:
+    # option 1: clips of this output are not smooth
+    # vid_clip = ImageSequenceClip(output_dir, fps=30)
+    # vid_clip.write_videofile(runs_dir+'/'+data_sub_dir+'.mp4')
+    
+    # option 2: created smoother clips
+    # use ffmpeg in terminal
